@@ -1,0 +1,11 @@
+[project]
+name = "quiz-game"
+version = "0.1.0"
+description = "퀴즈게임"
+readme = "README.md"
+authors = [
+    { name = "aha645", email = "likylove@naver.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
