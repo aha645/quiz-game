@@ -1,23 +1,166 @@
 import subprocess
 import json
 import os
+import struct
+from typing import Optional, List, Tuple
 
-DATA_FILE = "quiz_data.json"
+DATA_DIR = "quiz_db"
+DATA_FILE = os.path.join(DATA_DIR, "data.bin")
+IDX_FILE = os.path.join(DATA_DIR, "index.dat")
+FREE_FILE = os.path.join(DATA_DIR, "free.dat")
+HEADER_SIZE = 3
+
+
+class QuizDB:
+    def __init__(self):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        self.index_list: List[Tuple[int, int]] = []
+        self.free_blocks: List[Tuple[int, int]] = []
+        self._load_index()
+        self._load_free()
+
+    def _load_index(self):
+        if not os.path.exists(IDX_FILE):
+            return
+        with open(IDX_FILE, "rb") as f:
+            while chunk := f.read(12):
+                if len(chunk) < 12:
+                    break
+                qid, off = struct.unpack('<IQ', chunk)
+                self.index_list.append((qid, off))
+
+    def _save_index(self):
+        with open(IDX_FILE, "wb") as f:
+            for qid, off in self.index_list:
+                f.write(struct.pack('<IQ', qid, off))
+
+    def _load_free(self):
+        if not os.path.exists(FREE_FILE):
+            return
+        with open(FREE_FILE, "rb") as f:
+            while True:
+                ob = f.read(8)
+                if len(ob) < 8:
+                    break
+                sb = f.read(4)
+                self.free_blocks.append((struct.unpack('<QI', ob + sb)[0], struct.unpack('<QI', ob + sb)[1]))
+
+    def _save_free(self):
+        with open(FREE_FILE, "wb") as f:
+            for off, sz in self.free_blocks:
+                f.write(struct.pack('<QI', off, sz))
+
+    def _allocate_block(self, payload_len: int) -> int:
+        need = HEADER_SIZE + payload_len
+        best_i, best_s = -1, float('inf')
+        for i, (off, sz) in enumerate(self.free_blocks):
+            if sz >= need and sz < best_s:
+                best_i, best_s = i, sz
+        if best_i >= 0:
+            off, _ = self.free_blocks.pop(best_i)
+            self._save_free()
+            return off
+        with open(DATA_FILE, "ab") as f:
+            return f.tell()
+
+    def add_quiz(self, qid: int, payload: dict) -> bool:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        off = self._allocate_block(len(raw))
+        with open(DATA_FILE, "r+b" if os.path.getsize(DATA_FILE) > 0 else "wb+") as f:
+            f.seek(off)
+            f.write(struct.pack('<BH', 1, len(raw)))
+            f.write(raw)
+        self.index_list.append((qid, off))
+        self.index_list.sort(key=lambda x: x[0])
+        self._save_index()
+        return True
+
+    def _read_at(self, offset: int) -> Optional[dict]:
+        with open(DATA_FILE, "rb") as f:
+            f.seek(offset)
+            hdr = f.read(HEADER_SIZE)
+            if len(hdr) < HEADER_SIZE:
+                return None
+            active, plen = struct.unpack('<BH', hdr)
+            if active == 0:
+                return None
+            data = f.read(plen)
+        try:
+            return json.loads(data.decode('utf-8'))
+        except Exception:
+            return None
+
+    def get_quiz(self, qid: int) -> Optional[dict]:
+        lo, hi = 0, len(self.index_list) - 1
+        while lo <= hi:
+            mid = (lo + hi // 2)
+            if self.index_list[mid][0] == qid:
+                return self._read_at(self.index_list[mid][1])
+
+
+    def get_all_ids(self) -> List[int]:
+        valid: List[int] = []
+        for qid, off in self.index_list:
+            if self._read_at(off) is not None:
+                valid.append(qid)
+        return valid
+
+    def delete_quiz(self, qid: int) -> bool:
+        lo, hi = 0, len(self.index_list) - 1
+        found_i = -1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self.index_list[mid][0] == qid:
+                found_i = mid
+                break
+            elif self.index_list[mid][0] < qid:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if found_i < 0:
+            return False
+        _, off = self.index_list.pop(found_i)
+        # Soft delete: overwrite active flag with 0
+        with open(DATA_FILE, "rb") as f:
+            f.seek(off)
+            hdr = f.read(HEADER_SIZE)
+            if len(hdr) == HEADER_SIZE:
+                _, plen = struct.unpack('<BH', hdr)
+                full_sz = HEADER_SIZE + plen
+            else:
+                return False
+        with open(DATA_FILE, "r+b") as f:
+            f.seek(off)
+            f.write(struct.pack('B', 0))   # active = 0 (inactive)
+        self.free_blocks.append((off, full_sz))
+        self._save_free()
+        self._save_index()
+        return True
+
+    def get_by_category(self, cat: str) -> List[dict]:
+        out: List[dict] = []
+        for qid, off in self.index_list:
+            d = self._read_at(off)
+            if d and d.get('category') == cat:
+                out.append(d)
+        return out
+
+    def get_next_id(self) -> int:
+        if not self.index_list:
+            return 1
+        return max(q for q, _ in self.index_list) + 1
 
 
 class Quiz:
-    """단일 퀴즈 항목"""
-
     def __init__(self, question: str, choices: list[str], answer_idx: int, category: str = "", quiz_id: int = 0):
         self.id = quiz_id
         self.question = question
-        self.choices = choices          # 선택지 목록 (4개)
-        self.answer_idx = answer_idx    # 정답 인덱스 (0~3)
+        self.choices = choices
+        self.answer_idx = answer_idx
         self.category = category
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
-            "id": self.id,
             "question": self.question,
             "choices": self.choices,
             "answer_idx": self.answer_idx,
@@ -25,69 +168,46 @@ class Quiz:
         }
 
     @staticmethod
-    def from_dict(data: dict) -> "Quiz":
-        return Quiz(
-            data["question"],
-            data["choices"],
-            data["answer_idx"],
-            data.get("category", ""),
-            data.get("id", 0),
-        )
+    def from_dict(d: dict) -> 'Quiz':
+        return Quiz(d["question"], d["choices"], d["answer_idx"], d.get("category", ""), d.get("id", 0))
 
 
 class QuizGame:
     def __init__(self):
-        self.quiz_total_num = 0
-        self.quiz_hit_cnt = 0
-        self.top_score = 0
-        self.quizzes: list[Quiz] = []
-        self.load_data()
+        self.db = QuizDB()
+        self.top_score = self._load_top()
 
-    # ---------- 데이터 파일 저장/로딩 ----------
+    def _load_top(self) -> int:
+        mf = os.path.join(DATA_DIR, "meta.json")
+        if os.path.exists(mf):
+            with open(mf, "r", encoding="utf-8") as f:
+                return json.load(f).get("top_score", 0)
+        return 0
 
-    def load_data(self):
-        """저장된 퀴즈 데이터를 로드합니다."""
-        if os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.quizzes = [Quiz.from_dict(q) for q in data.get("quizzes", [])]
-                    self.top_score = data.get("top_score", 0)
-                    self.quiz_total_num = len(self.quizzes)
-            except (json.JSONDecodeError, KeyError):
-                self.quizzes = []
-                self.init_default_quizzes()
-        else:
-            self.init_default_quizzes()
+    def _save_top(self):
+        mf = os.path.join(DATA_DIR, "meta.json")
+        with open(mf, "w", encoding="utf-8") as f:
+            json.dump({"top_score": self.top_score}, f, ensure_ascii=False, indent=2)
 
-    def save_data(self):
-        """퀴즈 데이터를 JSON 파일에 저장합니다."""
-        data = {
-            "quizzes": [q.to_dict() for q in self.quizzes],
-            "top_score": self.top_score,
-        }
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    def _migrate_json(self):
+        jf = "quiz_data.json"
+        if not os.path.exists(jf):
+            return
+        with open(jf, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        for qd in d.get("quizzes", []):
+            self.db.add_quiz(qd["id"], {
+                "question": qd["question"],
+                "choices": qd["choices"],
+                "answer_idx": qd["answer_idx"],
+                "category": qd.get("category", ""),
+            })
+        if d.get("top_score"):
+            self.top_score = d["top_score"]
+            self._save_top()
+        os.remove(jf)
 
-    def init_default_quizzes(self):
-        """기본 퀴즈 2개를 생성합니다."""
-        defaults = [
-            Quiz("Python의 창시자는 누구인가?", ["Guido van Rossum", "James Gosling", "Dennis Ritchie", "Linus Torvalds"], 0, "프로그래밍", quiz_id=1),
-            Quiz("이름은 어디서 유래되었나요?", ["모든 것", "코딩", "알고리즘", "데이터베이스"], 1, "프로그래밍", quiz_id=2),
-        ]
-        self.quizzes = defaults
-        self.quiz_total_num = len(self.quizzes)
-        self.save_data()
-
-    # ---------- 유틸리티 ----------
-
-    def _next_id(self) -> int:
-        """기존 퀴즈 중 최대 ID+1 반환 (순차적 ID 할당)"""
-        if not self.quizzes:
-            return 1
-        return max(q.id for q in self.quizzes) + 1
-
-    def getInputNum(self, prompt: str = "선택: ") -> int:
+    def getInput(self, prompt: str = "입력: ") -> int:
         while True:
             try:
                 return int(input(prompt))
@@ -97,189 +217,171 @@ class QuizGame:
     def pause(self):
         input("\n>>> ENTER를 눌러 계속하세요...")
 
-    def clear_screen(self):
+    def clear(self):
         subprocess.run("clear", shell=True)
 
-    # ---------- 표시 ----------
+    def show_title(self):
+        print("=" * 30)
+        print("\t\t퀴즈 게임\n" + "=" * 30)
 
-    def quiz_title_show(self):
-        print("=" * 26)
-        print("\t퀴즈 게임\t")
-        print("=" * 26)
+    def show_menu(self):
+        for item in ["1. 퀴즈 풀기", "2. 퀴즈 추가",
+                     "3. 퀴지 목록 보기","4. 점수 확인", "5. 프로그램 종료"]:
+            print(item)
 
-    def menu_list_show(self):
-        print("1. 퀴즈풀기")
-        print("2. 퀴즈추가")
-        print("3. 퀴즈목록")
-        print("4. 점수확인")
-        print("5. 종료")
 
-    # ---------- 핵심 기능 ----------
-
-    def quiz_play(self):
-        """퀴즈를 풀게 합니다."""
-        if not self.quizzes:
-            print("\n 풀 수 있는 퀴즈가 없습니다!")
+    def play_quiz(self):
+        ids = self.db.get_all_ids()
+        if not ids:
+            print("\n풀 수 있는 QUIZ가 등록되어 있지 않습니다!")
             self.pause()
             return
-
-        self.clear_screen()
-        self.quiz_total_num = len(self.quizzes)
-        self.quiz_hit_cnt = 0
-        print(f"퀴즈를 시작합니다! (총 {self.quiz_total_num}문제)")
-        print("-" * 30)
-
-        for i, quiz in enumerate(self.quizzes, 1):
-            print(f"\n[{i}/{self.quiz_total_num}] Q: {quiz.question}")
+        self.clear()
+        total, hits = len(ids), 0
+        print(f"퀴즈를 시작합니다! (총 {total}문제)")
+        print("-" * 35)
+        for i, qid in enumerate(ids, 1):
+            d = self.db.get_quiz(qid)
+            if d is None:
+                continue
+            quiz = Quiz.from_dict(d)
+            print(f"\n[{i}/{total}] {quiz.question}")
             if quiz.category:
-                print(f"    카테고리: [{quiz.category}]")
-
-            for j, choice in enumerate(quiz.choices, 1):
-                print(f"    {j}. {choice}")
-
-            # 정답 입력
+                print(f"   카테고리: [{quiz.category}]")
+            for j, c in enumerate(quiz.choices, 1):
+                print(f"   {j}. {c}")
             try:
-                answer = self.getInputNum()
+                ans = self.getInput()
             except (EOFError, KeyboardInterrupt):
                 return
-
-            if answer == quiz.answer_idx + 1:
-                print("✅ 정답입니다! 🎉")
-                self.quiz_hit_cnt += 1
+            if ans == quiz.answer_idx + 1:
+                print("    ✅ 정답!")
+                hits += 1
             else:
-                correct_name = quiz.choices[quiz.answer_idx]
-                print(f"❌ 오답입니다. 정답: {correct_name}")
-
-        # 결과 표시
-        score = self.quiz_hit_cnt * (100 // self.quiz_total_num) if self.quiz_total_num > 0 else 0
-        print("\n" + "=" * 30)
-        print(f"최종 결과:")
-        print(f"   정답: {self.quiz_hit_cnt}/{self.quiz_total_num}")
-        print(f"   점수: {score}점")
-
-        if score > self.top_score:
-            self.top_score = score
-            print("신규 기록! 최고 점수를 갱신했습니다!")
-
-        self.save_data()
+                print(f"    ❌ 오답..정답은 '{quiz.choices[quiz.answer_idx]}'")
+        final_score = (hits // total) * 100 if total > 0 else 0
+        print("\n" + "="*35)
+        print(f"| 결과 | 정답: {hits}/{total} | 점수: {final_score}")
+        if final_score > self.top_score:
+            self.top_score = min(final_score, 100)
+            self._save_top()
+            print("🏆 신규 기록합니다!")
+        print("="*35)
         self.pause()
 
-    def quiz_add(self):
-        """새 퀴즈를 추가합니다."""
-        self.clear_screen()
-        print("새 퀴즈 추가")
-        print("-" * 30)
-
-        # 문제 입력
-        question = input("문제를 입력하세요: ").strip()
-        if not question:
-            print("입니다!")
+    def add_quiz(self):
+        self.clear()
+        txt = input("문제: ").strip()
+        if not txt:
+            print("문제는 필수입니다.")
             self.pause()
             return
-
-        # 선택지 입력 (4개)
-        choices = []
-        for i in range(1, 5):
-            choice = input(f"   {i}번 선택지를 입력하세요: ").strip()
-            if not choice:
-                print("선택지는 비워둘 수 없습니다!")
-                return self.quiz_add()
-            choices.append(choice)
-
-        # 정답 인덱스
+        choices2: list[str] = []
+        for n in range(1, 5):
+            v = input(f"   {n}번 선택지: ").strip()
+            while not v:
+                v = input(f"   {n}번 선택지 ( 필수): ").strip()
+            choices2.append(v)
+        a_num = -1
         try:
-            answer = self.getInputNum("정답 번호(1~4): ")
-            while answer not in (1, 2, 3, 4):
-                print("1~4 사이의 숫자를 입력해주세요!")
-                answer = self.getInputNum("정답 번호(1~4): ")
-        except (EOFError, KeyboardInterrupt):
+            a_in = self.getInput("정답 번호(1~4): ")
+        except:
             return
-
-        # 카테고리 (선택사항)
-        category = input("카테고리를 입력하세요 (생략 가능): ").strip()
-
-        quiz = Quiz(question, choices, answer - 1, category, quiz_id=self._next_id())
-        self.quizzes.append(quiz)
-        self.save_data()
-
-        print(f"\n✅ '{question}' 퀴즈가 추가되었습니다!")
-        print(f"   총 퀴즈 수: {len(self.quizzes)}개")
+        while a_in not in (1, 2, 3, 4):
+            print("잘못된 답변입니다..1~4")
+            try:
+                a_num = int(input("정답 번호(1-4): "))
+            except ValueError:
+                pass
+        aid_final = a_in - 1
+        category2 = input("카테고리 입력: ").strip() or "기본"
+        nid = self.db.get_next_id()
+        payload = {
+            "question": txt,
+            "choices": choices2,
+            "answer_idx": aid_final,
+            "category": category2,
+        }
+        self.db.add_quiz(n, payload)
+        print(f"\n✅ '{txt}' 퀴즈가 추가되었습니다!")
+        cnt = len(self.db.get_all_ids())
+        print(f'   전체 개수: {cnt}개')
         self.pause()
 
-    def quiz_list(self):
-        """등록된 퀴즈 목록을 보여줍니다."""
-        self.clear_screen()
-        print("등록된 퀴즈 목록")
-        print("-" * 30)
-
-        if not self.quizzes:
-            print("\n등록된 퀴즈가 없습니다!")
+    def list_quizzes(self):
+        self.clear()
+        ids2 = self.db.get_all_ids()
+        if not ids2:
+            print("등록된 QUIZ가 없습니다!")
             self.pause()
-            return
-
-        for i, quiz in enumerate(self.quizzes, 1):
-            category_str = f" | [{quiz.category}]" if quiz.category else ""
-            print(f"\n{i}. {quiz.question}{category_str}")
-            for j, choice in enumerate(quiz.choices, 1):
-                marker = " ✅" if j - 1 == quiz.answer_idx else ""
-                print(f"   {j}. {choice}{marker}")
-
-        print(f"\n   (총 {len(self.quizzes)}개)")
+        max_show = min(len(ids2), 20)
+        for ii, qid in enumerate(ids2[:max_show], 1):
+            d = self.db.get_quiz(qid)
+            if d:
+                zz = Quiz.from_dict(d)
+                cat_s = f" | [{zz.category}]" if zz.category else ""
+                print(f"\n{ii}. {zz.question}{cat_s}")
+                for j, c in enumerate(zz.choices, 1):
+                    mark = " ✅" if (j - 1) == zz.answer_idx else ""
+                    print(f"   {j}. {c}{mark}")
+        if len(ids2) > 20:
+            print(f"\n..나머지 {len(ids2)-20}개는 개별 조회")
+            try:
+                sid = self.getInput("ID를 입력하세요~: ")
+                dd = self.db.get_quiz(sid)
+                if dd:
+                    z = Quiz.from_dict(dd)
+                    print(f"\nID {sid}:  {z.question}")
+                    for j, c in enumerate(z.choices, 1):
+                        m2 = " ✅" if (j - 1) == z.answer_idx else ""
+                        print(f"   {j}. {c}{m}" )
+            except:
+                pass
         self.pause()
 
-    def quiz_score(self):
-        """최고 점수를 확인합니다."""
-        self.clear_screen()
+    def score_check(self):
+        self.clear()
         print("점수 확인")
-        print("-" * 30)
-
-        if not self.quizzes:
-            print("\n 풀이 기록이 없습니다!")
+        print("-"*35)
+        ids3 = self.db.get_all_ids()
+        if not ids3:
+            print("해당 기록이 없습니다!")
             self.pause()
             return
-
-        self.quiz_total_num = len(self.quizzes)
-        total_possible = (100 // self.quiz_total_num) * self.quiz_total_num if self.quiz_total_num > 0 else 100
-        pct = (self.top_score / total_possible * 100) if total_possible > 0 else 0
-
-        print(f"\n   최고 점수: {self.top_score}점 (최대 {total_possible}점)")
+        tp = min(100, (100 // len(ids3)) * len(ids3) if len(ids3) > 0 else 100)
+        pct = (self.top_score / tp) * 100 if tp > 0 else 0
+        print(f"\n   최고 점수: {self.top_score}점 (최대 {tp}점)")
         print(f"   달성률: {pct:.1f}%")
         self.pause()
 
-    # ---------- 메인 루프 ----------
-
     def run(self):
+        if os.path.exists("quiz_data.json"):
+            self._migrate_json()
         while True:
             try:
-                self.clear_screen()
-                self.quiz_title_show()
-                self.menu_list_show()
-                sel_num = self.getInputNum()
-
-                if sel_num not in (1, 2, 3, 4, 5):
-                    print("\n  1~5 사이의 메뉴 번호를 선택해주세요!")
+                self.clear()
+                self.show_title()
+                self.show_menu()
+                sel = self.getInput("메뉴 선택: ")
+                if sel not in (1, 2, 3, 4, 5):
+                    print("\n1~5 사이 숫자를 선택해주세요!")
                     self.pause()
                     continue
-
-                match sel_num:
+                match sel:
                     case 1:
-                        self.quiz_play()
+                        self.play_quiz()
                     case 2:
-                        self.quiz_add()
+                        self.add_quiz()
                     case 3:
-                        self.quiz_list()
+                        self.list_quizzes()
                     case 4:
-                        self.quiz_score()
+                        self.score_check()
                     case 5:
                         print("\n프로그램을 종료합니다. 감사합니다!")
-                        return "quit"
+                        return
             except EOFError:
-                print("\n\n(입력 스트림이 닫혔습니다.)")
+                print("\n(입력 스트림 닫힘)")
                 break
             except KeyboardInterrupt:
-                print("\n\nCtrl+C로 종료합니다.")
-                return "quit"
-
-
-if __name__ == "__main__":
-    QuizGame().run()
+                print("\nCtrl+C")
+                return
