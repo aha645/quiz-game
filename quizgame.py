@@ -1,7 +1,6 @@
 import subprocess
 import json
 import os
-from datetime import datetime
 
 DATA_FILE = "quiz_data.json"
 
@@ -9,11 +8,11 @@ DATA_FILE = "quiz_data.json"
 class Quiz:
     """단일 퀴즈 항목"""
 
-    def __init__(self, question: str, choices: list[str], answer_idx: int, category: str = ""):
-        self.id = hash(f"{question}{datetime.now().isoformat()}") % 1000000
+    def __init__(self, question: str, choices: list[str], answer_idx: int, category: str = "", quiz_id: int = 0):
+        self.id = quiz_id
         self.question = question
-        self.choices = choices  # 선택지 목록 (4개)
-        self.answer_idx = answer_idx  # 정답 인덱스 (0~3)
+        self.choices = choices          # 선택지 목록 (4개)
+        self.answer_idx = answer_idx    # 정답 인덱스 (0~3)
         self.category = category
 
     def to_dict(self):
@@ -27,9 +26,13 @@ class Quiz:
 
     @staticmethod
     def from_dict(data: dict) -> "Quiz":
-        q = Quiz(data["question"], data["choices"], data["answer_idx"], data.get("category", ""))
-        q.id = data.get("id", 0)
-        return q
+        return Quiz(
+            data["question"],
+            data["choices"],
+            data["answer_idx"],
+            data.get("category", ""),
+            data.get("id", 0),
+        )
 
 
 class QuizGame:
@@ -67,16 +70,22 @@ class QuizGame:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def init_default_quizzes(self):
-        """기본 퀴즈 5개를 생성합니다."""
+        """기본 퀴즈 2개를 생성합니다."""
         defaults = [
-            Quiz("Python의 창시자는 누구인가?", ["Guido van Rossum", "James Gosling", "Dennis Ritchie", "Linus Torvalds"], 0, "프로그래밍"),
-            Quiz("이름은 어디서 유래되었나요?", ["모든 것", "코딩", "알고리즘", "데이터베이스"], 1, "프로그래밍"),
+            Quiz("Python의 창시자는 누구인가?", ["Guido van Rossum", "James Gosling", "Dennis Ritchie", "Linus Torvalds"], 0, "프로그래밍", quiz_id=1),
+            Quiz("이름은 어디서 유래되었나요?", ["모든 것", "코딩", "알고리즘", "데이터베이스"], 1, "프로그래밍", quiz_id=2),
         ]
         self.quizzes = defaults
         self.quiz_total_num = len(self.quizzes)
         self.save_data()
 
     # ---------- 유틸리티 ----------
+
+    def _next_id(self) -> int:
+        """기존 퀴즈 중 최대 ID+1 반환 (순차적 ID 할당)"""
+        if not self.quizzes:
+            return 1
+        return max(q.id for q in self.quizzes) + 1
 
     def getInputNum(self, prompt: str = "선택: ") -> int:
         while True:
@@ -89,7 +98,7 @@ class QuizGame:
         input("\n>>> ENTER를 눌러 계속하세요...")
 
     def clear_screen(self):
-        subprocess.run("clear",shell=True)
+        subprocess.run("clear", shell=True)
 
     # ---------- 표시 ----------
 
@@ -189,7 +198,7 @@ class QuizGame:
         # 카테고리 (선택사항)
         category = input("카테고리를 입력하세요 (생략 가능): ").strip()
 
-        quiz = Quiz(question, choices, answer - 1, category)
+        quiz = Quiz(question, choices, answer - 1, category, quiz_id=self._next_id())
         self.quizzes.append(quiz)
         self.save_data()
 
