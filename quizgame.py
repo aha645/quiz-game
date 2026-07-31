@@ -1,3 +1,4 @@
+import subprocess
 import json
 import os
 from datetime import datetime
@@ -82,13 +83,13 @@ class QuizGame:
             try:
                 return int(input(prompt))
             except ValueError:
-                print("⚠️  올바른 숫자를 입력해주세요!")
+                print("올바른 숫자를 입력해주세요!")
 
     def pause(self):
         input("\n>>> ENTER를 눌러 계속하세요...")
 
     def clear_screen(self):
-        os.system("cls" if os.name == "nt" else "clear")
+        subprocess.run("clear",shell=True)
 
     # ---------- 표시 ----------
 
@@ -109,14 +110,14 @@ class QuizGame:
     def quiz_play(self):
         """퀴즈를 풀게 합니다."""
         if not self.quizzes:
-            print("\n⚠️  풀 수 있는 퀴즈가 없습니다!")
+            print("\n 풀 수 있는 퀴즈가 없습니다!")
             self.pause()
             return
 
         self.clear_screen()
         self.quiz_total_num = len(self.quizzes)
         self.quiz_hit_cnt = 0
-        print(f"🎮 퀴즈를 시작합니다! (총 {self.quiz_total_num}문제)")
+        print(f"퀴즈를 시작합니다! (총 {self.quiz_total_num}문제)")
         print("-" * 30)
 
         for i, quiz in enumerate(self.quizzes, 1):
@@ -143,13 +144,13 @@ class QuizGame:
         # 결과 표시
         score = self.quiz_hit_cnt * (100 // self.quiz_total_num) if self.quiz_total_num > 0 else 0
         print("\n" + "=" * 30)
-        print(f"📊 최종 결과:")
+        print(f"최종 결과:")
         print(f"   정답: {self.quiz_hit_cnt}/{self.quiz_total_num}")
         print(f"   점수: {score}점")
 
         if score > self.top_score:
             self.top_score = score
-            print("🏆 신규 기록! 최고 점수를 갱신했습니다!")
+            print("신규 기록! 최고 점수를 갱신했습니다!")
 
         self.save_data()
         self.pause()
@@ -157,13 +158,13 @@ class QuizGame:
     def quiz_add(self):
         """새 퀴즈를 추가합니다."""
         self.clear_screen()
-        print("➕ 새 퀴즈 추가")
+        print("새 퀴즈 추가")
         print("-" * 30)
 
         # 문제 입력
-        question = input("📝 문제를 입력하세요: ").strip()
+        question = input("문제를 입력하세요: ").strip()
         if not question:
-            print("⚠️ 问题是空입니다!")
+            print("입니다!")
             self.pause()
             return
 
@@ -172,7 +173,7 @@ class QuizGame:
         for i in range(1, 5):
             choice = input(f"   {i}번 선택지를 입력하세요: ").strip()
             if not choice:
-                print("⚠️  선택지는 비워둘 수 없습니다!")
+                print("선택지는 비워둘 수 없습니다!")
                 return self.quiz_add()
             choices.append(choice)
 
@@ -180,7 +181,7 @@ class QuizGame:
         try:
             answer = self.getInputNum("정답 번호(1~4): ")
             while answer not in (1, 2, 3, 4):
-                print("⚠️  1~4 사이의 숫자를 입력해주세요!")
+                print("1~4 사이의 숫자를 입력해주세요!")
                 answer = self.getInputNum("정답 번호(1~4): ")
         except (EOFError, KeyboardInterrupt):
             return
@@ -199,11 +200,11 @@ class QuizGame:
     def quiz_list(self):
         """등록된 퀴즈 목록을 보여줍니다."""
         self.clear_screen()
-        print("📋 등록된 퀴즈 목록")
+        print("등록된 퀴즈 목록")
         print("-" * 30)
 
         if not self.quizzes:
-            print("\n⚠️  등록된 퀴즈가 없습니다!")
+            print("\n등록된 퀴즈가 없습니다!")
             self.pause()
             return
 
@@ -220,11 +221,11 @@ class QuizGame:
     def quiz_score(self):
         """최고 점수를 확인합니다."""
         self.clear_screen()
-        print("🏆 점수 확인")
+        print("점수 확인")
         print("-" * 30)
 
         if not self.quizzes:
-            print("\n⚠️  풀이 기록이 없습니다!")
+            print("\n 풀이 기록이 없습니다!")
             self.pause()
             return
 
@@ -247,7 +248,7 @@ class QuizGame:
                 sel_num = self.getInputNum()
 
                 if sel_num not in (1, 2, 3, 4, 5):
-                    print("\n⚠️  1~5 사이의 메뉴 번호를 선택해주세요!")
+                    print("\n  1~5 사이의 메뉴 번호를 선택해주세요!")
                     self.pause()
                     continue
 
@@ -261,13 +262,13 @@ class QuizGame:
                     case 4:
                         self.quiz_score()
                     case 5:
-                        print("\n👋 프로그램을 종료합니다. 감사합니다!")
+                        print("\n프로그램을 종료합니다. 감사합니다!")
                         return "quit"
             except EOFError:
                 print("\n\n(입력 스트림이 닫혔습니다.)")
                 break
             except KeyboardInterrupt:
-                print("\n\n👋 Ctrl+C로 종료합니다.")
+                print("\n\nCtrl+C로 종료합니다.")
                 return "quit"
 
 
